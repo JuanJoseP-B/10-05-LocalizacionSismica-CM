@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SismoLoc - Análisis Multivariable</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --secondary: #a855f7;
+            --bg: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text: #f8fafc;
+            --input-bg: rgba(255, 255, 255, 0.05);
+        }
+
+        * {
+            box-sizing: border-box;
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at top left, #1e1b4b, #0f172a);
+            color: var(--text);
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+
+        section {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+
+        /* --- Hero Section --- */
+        #hero {
+            background: url('https://www.transparenttextures.com/patterns/cubes.png'), radial-gradient(circle at center, #1e1b4b, #0f172a);
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 20px;
+        }
+
+        .input-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            max-width: 600px;
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            padding: 40px;
+            border-radius: 32px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            text-align: left;
+        }
+
+        .input-group label {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin-bottom: 8px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        input[type="number"] {
+            background: var(--input-bg);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 12px;
+            border-radius: 12px;
+            font-family: inherit;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input[type="number"]:focus {
+            border-color: var(--primary);
+        }
+
+        .main-btn {
+            grid-column: span 2;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            border: none;
+            padding: 16px;
+            border-radius: 16px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .main-btn:hover {
+            transform: scale(1.02);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+        }
+
+        /* --- Dashboard Sections --- */
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 30px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 500px;
+        }
+
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ef4444;
+            margin-right: 8px;
+        }
+
+        .status-dot.online { background: #10b981; }
+
+        .scroll-hint {
+            position: absolute;
+            bottom: 30px;
+            animation: bounce 2s infinite;
+            color: #94a3b8;
+            cursor: pointer;
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {transform: translateY(0);}
+            40% {transform: translateY(-10px);}
+            60% {transform: translateY(-5px);}
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SECTION 1: INPUT -->
+    <section id="hero">
+        <h1>SismoLoc Engine</h1>
+        <p style="color: #94a3b8; margin-bottom: 30px;">Introduzca los parámetros para iniciar la simulación sísmica</p>
+        
+        <div class="input-grid">
+            <div class="input-group">
+                <label>Coordenada X (Origen)</label>
+                <input type="number" id="in-x" value="50" step="1">
+            </div>
+            <div class="input-group">
+                <label>Coordenada Y (Origen)</label>
+                <input type="number" id="in-y" value="50" step="1">
+            </div>
+            <div class="input-group">
+                <label>Profundidad Z</label>
+                <input type="number" id="in-z" value="15" step="1">
+            </div>
+            <div class="input-group">
+                <label>Amplitud Inicial (A0)</label>
+                <input type="number" id="in-a0" value="1000" step="50">
+            </div>
+            <div class="input-group">
+                <label>Número de Estaciones</label>
+                <input type="number" id="in-n" value="8" min="4" max="20">
+            </div>
+            <div class="input-group">
+                <label>Factor de Ruido (α)</label>
+                <input type="number" id="in-alpha" value="0.05" step="0.01" disabled>
+            </div>
+            <button class="main-btn" onclick="startSimulation()">Simular y Localizar</button>
+        </div>
+
+        <div class="scroll-hint" onclick="window.scrollTo(0, window.innerHeight)">
+            <span>Ver resultados</span><br>
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 13l5 5 5-5M7 6l5 5 5-5"/></svg>
+        </div>
+    </section>
+
+    <!-- SECTION 2: 3D VISUALIZATION -->
+    <section id="viz">
+        <div class="container">
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">Mapa 3D de Estaciones</h2>
+                    <div id="api-status"><span class="status-dot"></span>Desconectado</div>
+                </div>
+                <div id="plot-3d" class="chart-container"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SECTION 3: ANALYSIS -->
+    <section id="analysis">
+        <div class="analysis-grid">
+            <div class="card">
+                <h3>Mapa de Calor de Error (x, y)</h3>
+                <p style="font-size: 0.8rem; color: #94a3b8;">Plano de corte en Z=estimado</p>
+                <div id="plot-heatmap" style="height: 400px;"></div>
+            </div>
+            <div class="card">
+                <h3>Perfil de Error Global E_min(z)</h3>
+                <p style="font-size: 0.8rem; color: #94a3b8;">Identificación de profundidad</p>
+                <div id="plot-curve" style="height: 400px;"></div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+
+        async function startSimulation() {
+            const params = {
+                x: document.getElementById('in-x').value,
+                y: document.getElementById('in-y').value,
+                z: document.getElementById('in-z').value,
+                a0: document.getElementById('in-a0').value,
+                n_stations: document.getElementById('in-n').value
+            };
+
+            try {
+                // 1. Setup simulation
+                await fetch(`${API_URL}/setup`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(params)
+                });
+
+                // 2. Resolve localization
+                const solveRes = await fetch(`${API_URL}/solve`, { method: 'POST' });
+                const solveData = await solveRes.json();
+
+                // 3. Update all plots
+                await updatePlots(solveData.estimated_pos);
+                
+                // 4. Scroll to results
+                window.scrollTo(0, window.innerHeight);
+                
+            } catch (e) {
+                alert("Error al conectar con el backend. Asegúrese de que app.py esté corriendo.");
+            }
+        }
+
+        async function updatePlots(estimatedPos) {
+            // Load Stations and Real vs Estimated
+            const stationsRes = await fetch(`${API_URL}/stations`);
+            const sData = await stationsRes.json();
+
+            const traces = [
+                {
+                    x: sData.stations.map(s => s[0]),
+                    y: sData.stations.map(s => s[1]),
+                    z: sData.stations.map(s => s[2]),
+                    mode: 'markers', type: 'scatter3d', name: 'Sensores',
+                    marker: { size: 4, color: '#6366f1' }
+                },
+                {
+                    x: [sData.real_source[0]], y: [sData.real_source[1]], z: [sData.real_source[2]],
+                    mode: 'markers', type: 'scatter3d', name: 'Fuente Real',
+                    marker: { size: 8, color: '#ef4444', symbol: 'diamond' }
+                },
+                {
+                    x: [estimatedPos[0]], y: [estimatedPos[1]], z: [estimatedPos[2]],
+                    mode: 'markers', type: 'scatter3d', name: 'Estimación',
+                    marker: { size: 8, color: '#10b981', symbol: 'cross' }
+                }
+            ];
+
+            const layout3d = {
+                paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                margin: { l: 0, r: 0, b: 0, t: 0 },
+                scene: { xaxis: {color:'#94a3b8'}, yaxis: {color:'#94a3b8'}, zaxis: {color:'#94a3b8'} },
+                font: { family: 'Outfit', color: '#f8fafc' },
+                legend: { x: 0, y: 1 }
+            };
+
+            Plotly.newPlot('plot-3d', traces, layout3d);
+
+            // Heatmap at estimated Z
+            const heatRes = await fetch(`${API_URL}/heatmap?z=${estimatedPos[2]}`);
+            const hData = await heatRes.json();
+            Plotly.newPlot('plot-heatmap', [{
+                z: hData.z_values, x: hData.x, y: hData.y,
+                type: 'heatmap', colorscale: 'Viridis'
+            }], {
+                paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                margin: { l: 40, r: 20, b: 40, t: 20 },
+                font: { family: 'Outfit', color: '#f8fafc' }
+            });
+
+            // Error Curve
+            const curveRes = await fetch(`${API_URL}/error-curve`);
+            const cData = await curveRes.json();
+            Plotly.newPlot('plot-curve', [{
+                x: cData.z, y: cData.error, type: 'scatter',
+                line: { shape: 'spline', color: '#a855f7' }, fill: 'tozeroy'
+            }], {
+                paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                xaxis: { title: 'Profundidad (z)', color: '#94a3b8' },
+                yaxis: { title: 'Error', color: '#94a3b8' },
+                margin: { l: 50, r: 20, b: 50, t: 20 },
+                font: { family: 'Outfit', color: '#f8fafc' }
+            });
+        }
+
+        // Check backend status on load
+        (async () => {
+            try {
+                const res = await fetch(`${API_URL}/status`);
+                if (res.ok) {
+                    document.getElementById('api-status').innerHTML = '<span class="status-dot online"></span>Online';
+                }
+            } catch(e) {}
+        })();
+    </script>
+</body>
+</html>
