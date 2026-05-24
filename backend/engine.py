@@ -1,4 +1,8 @@
 import numpy as np
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 
 class SeismicEngine:
@@ -109,3 +113,75 @@ class SeismicEngine:
             e_min_values.append(res.fun)
             
         return z_values, np.array(e_min_values)
+
+    def save_heatmap_frame(self, z_plane, observed_amplitudes, A0_fixed, output_path,
+                           grid_size=40, x_range=(-100, 100), y_range=(-100, 100)):
+        """Renderiza y guarda un mapa de calor para un corte z=k como PNG."""
+        X, Y, Z = self.get_heatmap_data(
+            z_plane, observed_amplitudes, A0_fixed,
+            grid_size=grid_size, x_range=x_range, y_range=y_range
+        )
+
+        fig, ax = plt.subplots(figsize=(9, 7))
+        cp = ax.contourf(X, Y, np.log10(Z + 1e-5), levels=40, cmap='viridis_r')
+        plt.colorbar(cp, ax=ax, label='Log10(Error Residual)')
+
+        if len(self.stations) > 0:
+            ax.scatter(
+                self.stations[:, 0], self.stations[:, 1],
+                c='black', marker='^', s=100, label='Estaciones Receptoras'
+            )
+
+        min_idx = np.unravel_index(np.argmin(Z), Z.shape)
+        ax.scatter(
+            X[min_idx], Y[min_idx], c='red', marker='X', s=150,
+            label=f'Mínimo (x={X[min_idx]:.1f}, y={Y[min_idx]:.1f})'
+        )
+
+        ax.set_title(f'Mapa de Calor del Error en Profundidad z = {z_plane:.2f} m')
+        ax.set_xlabel('Coordenada X (m)')
+        ax.set_ylabel('Coordenada Y (m)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=100)
+        plt.close(fig)
+
+    def generate_z_cuts_video(self, observed_amplitudes, A0_fixed, output_path,
+                              z_range=(1, 200), num_cuts=100, frames_dir=None,
+                              grid_size=40, fps=10, cleanup_frames=True,
+                              x_range=(-100, 100), y_range=(-100, 100)):
+        """
+        Genera un video MP4 con al menos 100 cortes en z=k.
+        Cada frame se guarda como PNG y luego se unen en un solo archivo.
+        """
+        import imageio.v2 as imageio
+
+        if frames_dir is None:
+            frames_dir = os.path.join(os.path.dirname(output_path), 'frames_z_cortes')
+
+        os.makedirs(frames_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+        z_values = np.linspace(z_range[0], z_range[1], num_cuts)
+        frame_paths = []
+
+        for idx, z_plane in enumerate(z_values):
+            frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
+            self.save_heatmap_frame(
+                z_plane, observed_amplitudes, A0_fixed, frame_path,
+                grid_size=grid_size, x_range=x_range, y_range=y_range
+            )
+            frame_paths.append(frame_path)
+
+        with imageio.get_writer(output_path, fps=fps) as writer:
+            for frame_path in frame_paths:
+                writer.append_data(imageio.imread(frame_path))
+
+        if cleanup_frames:
+            for frame_path in frame_paths:
+                os.remove(frame_path)
+            if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
+                os.rmdir(frames_dir)
+
+        return output_path

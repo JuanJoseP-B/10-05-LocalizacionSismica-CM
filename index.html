@@ -241,6 +241,32 @@
                 <div id="plot-curve" style="height: 400px;"></div>
             </div>
         </div>
+
+        <div class="card" style="max-width: 1200px; width: 100%; margin-top: 30px;">
+            <h3>Video de Cortes en z=k (Entregable)</h3>
+            <p style="font-size: 0.8rem; color: #94a3b8;">
+                Genera un video con mínimo 100 cortes en profundidad. Cada frame es un mapa de calor guardado como PNG y unido en MP4.
+            </p>
+            <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: end; margin: 20px 0;">
+                <div class="input-group" style="min-width: 120px;">
+                    <label>Z mínimo</label>
+                    <input type="number" id="vid-z-min" value="1" step="1">
+                </div>
+                <div class="input-group" style="min-width: 120px;">
+                    <label>Z máximo</label>
+                    <input type="number" id="vid-z-max" value="200" step="1">
+                </div>
+                <div class="input-group" style="min-width: 120px;">
+                    <label>Cortes (≥100)</label>
+                    <input type="number" id="vid-cortes" value="100" min="100" step="1">
+                </div>
+                <button class="main-btn" style="width: auto; padding: 12px 24px; margin: 0;" onclick="generateHeatmapVideo()">
+                    Generar Video MP4
+                </button>
+            </div>
+            <div id="video-status" style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 12px;"></div>
+            <video id="heatmap-video" controls style="width: 100%; max-height: 480px; border-radius: 12px; display: none; background: #000;"></video>
+        </div>
     </section>
 
     <script>
@@ -338,6 +364,49 @@
                 margin: { l: 50, r: 20, b: 50, t: 20 },
                 font: { family: 'Outfit', color: '#f8fafc' }
             });
+        }
+
+
+        async function generateHeatmapVideo() {
+            const statusEl = document.getElementById('video-status');
+            const videoEl = document.getElementById('heatmap-video');
+            const zMin = parseFloat(document.getElementById('vid-z-min').value);
+            const zMax = parseFloat(document.getElementById('vid-z-max').value);
+            const numCuts = Math.max(parseInt(document.getElementById('vid-cortes').value, 10), 100);
+
+            statusEl.textContent = `Generando video con ${numCuts} cortes (z=${zMin} a z=${zMax})... Esto puede tardar unos minutos.`;
+            videoEl.style.display = 'none';
+
+            try {
+                const res = await fetch(`${API_URL}/heatmap-video`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ z_min: zMin, z_max: zMax, num_cuts: numCuts })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Error al generar el video');
+                }
+
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                videoEl.src = url;
+                videoEl.style.display = 'block';
+                statusEl.textContent = `Video listo: ${numCuts} cortes en z=k.`;
+
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'cortes_z.mp4';
+                link.textContent = 'Descargar MP4';
+                link.style.display = 'inline-block';
+                link.style.marginTop = '8px';
+                link.style.color = '#818cf8';
+                statusEl.appendChild(document.createElement('br'));
+                statusEl.appendChild(link);
+            } catch (e) {
+                statusEl.textContent = `Error: ${e.message}`;
+            }
         }
 
         // Check backend status on load
