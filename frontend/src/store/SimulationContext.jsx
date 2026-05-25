@@ -3,7 +3,11 @@ import { buildStationGrid } from '../constants/stations';
 import { simularEstaciones } from '../math/model';
 import { buildNetworkChartData } from '../math/errorFunction';
 import { inversionGaussNewton } from '../math/gaussNewton';
-import { checkBackendStatus, syncSimulation, startVideoJob, getVideoJobStatus, getVideoDownloadUrl } from '../services/api';
+import {
+  checkBackendStatus, syncSimulation, startVideoJob, getVideoJobStatus,
+  getVideoDownloadUrl, fetchErrorMinimoZ,
+} from '../services/api';
+import { calcularCurvaErrorMinimoZ } from '../math/eMinCurve';
 import { generatePdfReport } from '../services/pdfExport';
 
 const baseStations = buildStationGrid();
@@ -18,6 +22,8 @@ const initialState = {
   inversion: null,
   inversionHistory: [],
   inversionRunning: false,
+  eMinCurve: [],
+  eMinCurveLoading: false,
   backendOnline: false,
   video: { status: 'idle', progress: 0, message: '' },
 };
@@ -34,21 +40,27 @@ function reducer(state, action) {
     case 'SET_PARAM': {
       const params = { ...state.params, [action.key]: action.value };
       const computed = recompute({ ...state, params });
-      return { ...state, params, ...computed, inversion: null, inversionHistory: [] };
+      return {
+        ...state, params, ...computed, inversion: null, inversionHistory: [], eMinCurve: [],
+      };
     }
     case 'RESIMULATE':
       return { ...state, ...recompute(state) };
     case 'INVERSION_START':
-      return { ...state, inversionRunning: true };
+      return { ...state, inversionRunning: true, eMinCurveLoading: true };
     case 'INVERSION_DONE':
       return {
         ...state,
         inversionRunning: false,
         inversion: action.inversion,
         inversionHistory: action.history,
+        eMinCurve: action.eMinCurve ?? state.eMinCurve,
+        eMinCurveLoading: false,
       };
     case 'INVERSION_FAIL':
-      return { ...state, inversionRunning: false };
+      return { ...state, inversionRunning: false, eMinCurveLoading: false };
+    case 'SET_EMIN_CURVE':
+      return { ...state, eMinCurve: action.curve, eMinCurveLoading: false };
     case 'SET_BACKEND':
       return { ...state, backendOnline: action.online };
     case 'VIDEO_UPDATE':
@@ -78,18 +90,55 @@ export function SimulationProvider({ children }) {
     dispatch({ type: 'SET_PARAM', key, value: parseFloat(value) });
   }, []);
 
+  const loadEMinCurve = useCallback(async (A0) => {
+    const observaciones = state.sensors.map((s) => s.lecturaAzi);
+    const payload = { a0: A0, z_min: 1, z_max: 200, num_cuts: 50, grid_size: 40 };
+
+    if (state.backendOnline) {
+      await syncSimulation({
+        stations: state.sensors.map((s) => [s.x, s.y, s.z]),
+        x: state.params.x0,
+        y: state.params.y0,
+        z: state.params.z0,
+        a0: state.params.A0,
+        alpha: state.params.alpha,
+        amplitudes: observaciones,
+      });
+      const data = await fetchErrorMinimoZ(payload);
+      return data.curva_error_minimo ?? [];
+    }
+
+    return calcularCurvaErrorMinimoZ(baseStations, observaciones, A0, {
+      zMin: 1, zMax: 200, numCuts: 40, gridSize: 18,
+    });
+  }, [state.sensors, state.params, state.backendOnline]);
+
   const runInversion = useCallback(() => {
     dispatch({ type: 'INVERSION_START' });
-    window.setTimeout(() => {
+    window.setTimeout(async () => {
       try {
         const observaciones = state.sensors.map((s) => s.lecturaAzi);
         const result = inversionGaussNewton(baseStations, observaciones);
-        dispatch({ type: 'INVERSION_DONE', inversion: result, history: result.history });
+        const a0Curve = result.estimated?.A0 ?? state.params.A0;
+        let eMinCurve = [];
+        try {
+          eMinCurve = await loadEMinCurve(a0Curve);
+        } catch {
+          eMinCurve = calcularCurvaErrorMinimoZ(baseStations, observaciones, a0Curve, {
+            zMin: 1, zMax: 200, numCuts: 40, gridSize: 18,
+          });
+        }
+        dispatch({
+          type: 'INVERSION_DONE',
+          inversion: result,
+          history: result.history,
+          eMinCurve,
+        });
       } catch {
         dispatch({ type: 'INVERSION_FAIL' });
       }
     }, 0);
-  }, [state.sensors]);
+  }, [state.sensors, state.params.A0, loadEMinCurve]);
 
   const downloadPdf = useCallback(() => {
     generatePdfReport({
@@ -138,6 +187,9 @@ export function SimulationProvider({ children }) {
 
           if (status.state === 'done') {
             clearInterval(videoPollRef.current);
+            if (status.curva_error_minimo?.length) {
+              dispatch({ type: 'SET_EMIN_CURVE', curve: status.curva_error_minimo });
+            }
             const a = document.createElement('a');
             a.href = getVideoDownloadUrl(jobId);
             a.download = 'cortes_z.mp4';

@@ -205,7 +205,7 @@ class SeismicEngine:
 
         return X, Y, Z
 
-    def precalcular_rango_log_global(
+    def procesar_secuencia_cortes_z(
         self,
         observed_amplitudes,
         A0_fixed,
@@ -215,16 +215,31 @@ class SeismicEngine:
         x_range=(-70, 70),
         y_range=(-70, 70),
         log_eps=LOG_ERR_EPS,
+        cache_grids=False,
     ):
-        """Recorre todos los cortes Z y devuelve (z_lo, z_hi, levels) fijos para el video."""
+        """
+        Evalúa la secuencia de cortes Z (una pasada por plano).
+        Retorna curva E_min(z), rango log global para video y caché opcional de grids.
+        """
         z_values = np.linspace(z_range[0], z_range[1], num_cuts)
+        curva_error_minimo = []
+        grid_cache = []
         z_lo, z_hi = np.inf, -np.inf
 
         for z_plane in z_values:
-            _, _, Z = self.get_heatmap_data(
+            X, Y, Z = self.get_heatmap_data(
                 z_plane, observed_amplitudes, A0_fixed,
                 grid_size=grid_size, x_range=x_range, y_range=y_range,
             )
+            err_min = float(np.nanmin(Z))
+            curva_error_minimo.append({
+                'z': float(z_plane),
+                'error': err_min,
+            })
+
+            if cache_grids:
+                grid_cache.append((float(z_plane), X, Y, Z))
+
             Z_log = _to_log_visual(Z, log_eps)
             finite = Z_log[np.isfinite(Z_log)]
             if finite.size == 0:
@@ -240,7 +255,52 @@ class SeismicEngine:
             z_hi += margin
 
         levels = _niveles_equiespaciados(z_lo, z_hi, NUM_CONTOUR_LEVELS)
-        return float(z_lo), float(z_hi), levels
+
+        return {
+            'curva_error_minimo': curva_error_minimo,
+            'z_lo': float(z_lo),
+            'z_hi': float(z_hi),
+            'levels': levels,
+            'z_values': z_values,
+            'grid_cache': grid_cache,
+        }
+
+    def calcular_curva_error_minimo_z(
+        self,
+        observed_amplitudes,
+        A0_fixed,
+        z_range=(1, 200),
+        num_cuts=50,
+        grid_size=40,
+        x_range=(-70, 70),
+        y_range=(-70, 70),
+    ):
+        """E_min(z) = min_{x,y} E(x,y,z) con error relativo (sin log)."""
+        meta = self.procesar_secuencia_cortes_z(
+            observed_amplitudes, A0_fixed, z_range, num_cuts,
+            grid_size=grid_size, x_range=x_range, y_range=y_range,
+            cache_grids=False,
+        )
+        return meta['curva_error_minimo']
+
+    def precalcular_rango_log_global(
+        self,
+        observed_amplitudes,
+        A0_fixed,
+        z_range,
+        num_cuts,
+        grid_size=40,
+        x_range=(-70, 70),
+        y_range=(-70, 70),
+        log_eps=LOG_ERR_EPS,
+    ):
+        """Compat: rango log global a partir de la misma secuencia de cortes."""
+        meta = self.procesar_secuencia_cortes_z(
+            observed_amplitudes, A0_fixed, z_range, num_cuts,
+            grid_size=grid_size, x_range=x_range, y_range=y_range,
+            log_eps=log_eps, cache_grids=False,
+        )
+        return meta['z_lo'], meta['z_hi'], meta['levels']
 
     @staticmethod
     def _minimo_grid(X, Y, Z):
@@ -274,24 +334,18 @@ class SeismicEngine:
             
         return z_values, np.array(e_min_values)
 
-    def save_heatmap_frame(
+    def save_heatmap_frame_from_grid(
         self,
+        X,
+        Y,
+        Z,
         z_plane,
-        observed_amplitudes,
-        A0_fixed,
         output_path,
-        grid_size=40,
-        x_range=(-70, 70),
-        y_range=(-70, 70),
         contour_levels=None,
         log_vmin=None,
         log_vmax=None,
     ):
-        """Renderiza y guarda un mapa de calor para un corte z=k como PNG."""
-        X, Y, Z = self.get_heatmap_data(
-            z_plane, observed_amplitudes, A0_fixed,
-            grid_size=grid_size, x_range=x_range, y_range=y_range,
-        )
+        """Renderiza PNG a partir de una cuadrícula ya evaluada."""
 
         Z_log = _to_log_visual(Z)
         z_lo = log_vmin if log_vmin is not None else float(np.nanmin(Z_log))
@@ -334,31 +388,54 @@ class SeismicEngine:
         fig.savefig(output_path, dpi=100)
         plt.close(fig)
 
+    def save_heatmap_frame(
+        self,
+        z_plane,
+        observed_amplitudes,
+        A0_fixed,
+        output_path,
+        grid_size=40,
+        x_range=(-70, 70),
+        y_range=(-70, 70),
+        contour_levels=None,
+        log_vmin=None,
+        log_vmax=None,
+    ):
+        """Renderiza y guarda un mapa de calor para un corte z=k como PNG."""
+        X, Y, Z = self.get_heatmap_data(
+            z_plane, observed_amplitudes, A0_fixed,
+            grid_size=grid_size, x_range=x_range, y_range=y_range,
+        )
+        self.save_heatmap_frame_from_grid(
+            X, Y, Z, z_plane, output_path,
+            contour_levels=contour_levels, log_vmin=log_vmin, log_vmax=log_vmax,
+        )
+
     def generate_z_cuts_video(self, observed_amplitudes, A0_fixed, output_path,
                               z_range=(1, 200), num_cuts=100, frames_dir=None,
                               grid_size=40, fps=10, cleanup_frames=True,
                               x_range=(-70, 70), y_range=(-70, 70)):
-        """Genera MP4 con cortes en Z; niveles de contorno globales fijos."""
+        """Genera MP4; reutiliza una sola evaluación de grid por corte Z."""
         if frames_dir is None:
             frames_dir = os.path.join(os.path.dirname(output_path), 'frames_z_cortes')
 
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
 
-        z_lo, z_hi, levels = self.precalcular_rango_log_global(
+        meta = self.procesar_secuencia_cortes_z(
             observed_amplitudes, A0_fixed, z_range, num_cuts,
             grid_size=grid_size, x_range=x_range, y_range=y_range,
+            cache_grids=True,
         )
 
-        z_values = np.linspace(z_range[0], z_range[1], num_cuts)
         frame_paths = []
-
-        for idx, z_plane in enumerate(z_values):
+        for idx, (z_plane, X, Y, Z) in enumerate(meta['grid_cache']):
             frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
-            self.save_heatmap_frame(
-                z_plane, observed_amplitudes, A0_fixed, frame_path,
-                grid_size=grid_size, x_range=x_range, y_range=y_range,
-                contour_levels=levels, log_vmin=z_lo, log_vmax=z_hi,
+            self.save_heatmap_frame_from_grid(
+                X, Y, Z, z_plane, frame_path,
+                contour_levels=meta['levels'],
+                log_vmin=meta['z_lo'],
+                log_vmax=meta['z_hi'],
             )
             frame_paths.append(frame_path)
 
@@ -371,4 +448,4 @@ class SeismicEngine:
             if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
                 os.rmdir(frames_dir)
 
-        return output_path
+        return output_path, meta['curva_error_minimo']

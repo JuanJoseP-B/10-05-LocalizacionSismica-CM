@@ -100,12 +100,23 @@ h2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  height: 280px;
+  height: auto;
+  min-height: 280px;
+}
+
+.chart-card--wide {
+  grid-column: 1 / -1;
+  min-height: 240px;
 }
 
 .chart-card {
   padding: 1rem;
   min-height: 0;
+  height: 260px;
+}
+
+.graphs-container .chart-card--wide {
+  height: 280px;
 }
 
 .chart-card h3 {

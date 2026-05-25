@@ -44,3 +44,16 @@ export async function getVideoJobStatus(jobId) {
 export function getVideoDownloadUrl(jobId) {
   return `${API_URL}/heatmap-video/download/${jobId}`;
 }
+
+export async function fetchErrorMinimoZ(payload = {}) {
+  const res = await fetch(`${API_URL}/error-minimo-z`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Error al calcular E_min(z)');
+  }
+  return res.json();
+}
