@@ -16,6 +16,7 @@ current_simulation = {
     "observed": [],
     "real_source": [50, 50, 10],
     "real_A0": 1000,
+    "curva_error_minimo": [],
 }
 
 video_jobs = {}
@@ -32,24 +33,28 @@ def _run_video_job(job_id, observed, A0, z_range, num_cuts, fps, grid_size):
     frame_paths = []
 
     try:
-        z_values = np.linspace(z_range[0], z_range[1], num_cuts)
         os.makedirs(frames_dir, exist_ok=True)
 
         video_jobs[job_id].update({
             'progress': 2,
-            'message': 'Calculando rango global de color...',
+            'message': 'Evaluando cortes Z (E_min + mapas)...',
         })
-        z_lo, z_hi, levels = engine.precalcular_rango_log_global(
+        meta = engine.procesar_secuencia_cortes_z(
             observed, A0, z_range, num_cuts,
             grid_size=grid_size, x_range=(-70, 70), y_range=(-70, 70),
+            cache_grids=True,
         )
+        curva = meta['curva_error_minimo']
+        current_simulation['curva_error_minimo'] = curva
+        video_jobs[job_id]['curva_error_minimo'] = curva
 
-        for idx, z_plane in enumerate(z_values):
+        for idx, (z_plane, X, Y, Z) in enumerate(meta['grid_cache']):
             frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
-            engine.save_heatmap_frame(
-                z_plane, observed, A0, frame_path,
-                grid_size=grid_size, x_range=(-70, 70), y_range=(-70, 70),
-                contour_levels=levels, log_vmin=z_lo, log_vmax=z_hi,
+            engine.save_heatmap_frame_from_grid(
+                X, Y, Z, z_plane, frame_path,
+                contour_levels=meta['levels'],
+                log_vmin=meta['z_lo'],
+                log_vmax=meta['z_hi'],
             )
             frame_paths.append(frame_path)
             progress = int(((idx + 1) / num_cuts) * 90)
@@ -148,16 +153,52 @@ def start_heatmap_video():
     return jsonify({"job_id": job_id})
 
 
+@app.route('/api/error-minimo-z', methods=['POST'])
+def error_minimo_z():
+    if len(current_simulation["observed"]) == 0:
+        return jsonify({"error": "No hay datos de simulación"}), 400
+
+    data = request.json or {}
+    A0 = float(data.get('a0', current_simulation["real_A0"]))
+    z_min = float(data.get('z_min', 1))
+    z_max = float(data.get('z_max', 200))
+    num_cuts = max(int(data.get('num_cuts', 50)), 2)
+    grid_size = int(data.get('grid_size', 40))
+
+    curva = engine.calcular_curva_error_minimo_z(
+        current_simulation["observed"],
+        A0,
+        z_range=(z_min, z_max),
+        num_cuts=num_cuts,
+        grid_size=grid_size,
+    )
+    curva = sorted(curva, key=lambda p: p['z'])
+    current_simulation['curva_error_minimo'] = curva
+
+    punto_min = None
+    if curva:
+        punto_min = min(curva, key=lambda p: p['error'])
+
+    return jsonify({
+        "curva_error_minimo": curva,
+        "z_minimo_curva": punto_min['z'] if punto_min else None,
+        "error_minimo": punto_min['error'] if punto_min else None,
+    })
+
+
 @app.route('/api/heatmap-video/status/<job_id>', methods=['GET'])
 def video_status(job_id):
     job = video_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Trabajo no encontrado"}), 404
-    return jsonify({
+    payload = {
         "state": job.get('state'),
         "progress": job.get('progress', 0),
         "message": job.get('message', ''),
-    })
+    }
+    if job.get('curva_error_minimo'):
+        payload['curva_error_minimo'] = job['curva_error_minimo']
+    return jsonify(payload)
 
 
 @app.route('/api/heatmap-video/download/<job_id>', methods=['GET'])
