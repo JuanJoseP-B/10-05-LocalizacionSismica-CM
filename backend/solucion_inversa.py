@@ -3,7 +3,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-from backend.engine import SeismicEngine
+from backend.engine import (
+    SeismicEngine,
+    LOG_ERR_EPS,
+    NUM_CONTOUR_LEVELS,
+    _to_log_visual,
+    _niveles_equiespaciados,
+    _validar_niveles_contorno,
+    escribir_video_mp4,
+)
 from backend.stations_grid import GRID_STATIONS, STATION_NAMES
 
 # ====================================================================
@@ -57,6 +65,25 @@ def calcular_error_global(df, m):
     A_obs = df['Amplitud_Azi'].values
     A_pred = modelo_atenuacion(df['X'].values, df['Y'].values, df['Z'].values, m)
     return np.sum((A_obs - A_pred) ** 2)
+
+
+def calcular_error_relativo_global(df, m):
+    A_obs = df['Amplitud_Azi'].values
+    A_pred = modelo_atenuacion(df['X'].values, df['Y'].values, df['Z'].values, m)
+    denom = np.maximum(np.abs(A_obs), 1e-30)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rel = (A_obs - A_pred) / denom
+    rel = np.nan_to_num(rel, nan=0.0, posinf=0.0, neginf=0.0)
+    rel = np.clip(rel, -50.0, 50.0)
+    return float(np.sum(rel ** 2))
+
+
+def _indice_minimo_grid(Z):
+    Z = np.asarray(Z, dtype=float)
+    z_min = np.nanmin(Z)
+    if np.allclose(Z, z_min, rtol=0, atol=1e-15 * max(abs(z_min), 1.0)):
+        return Z.shape[0] // 2, Z.shape[1] // 2
+    return np.unravel_index(np.nanargmin(Z), Z.shape)
 
 
 def calcular_jacobiano_analitico(df, m):
@@ -203,7 +230,7 @@ def inversion_gauss_newton(df, m_inicial=None, max_iter=MAX_ITER_DEFAULT, tol=1e
 
 
 def calcular_mapa_error_z(df, z_fijo, A0_fijo, resolucion=60,
-                          x_range=(-100, 100), y_range=(-100, 100)):
+                          x_range=(-70, 70), y_range=(-70, 70)):
     x_rango = np.linspace(x_range[0], x_range[1], resolucion)
     y_rango = np.linspace(y_range[0], y_range[1], resolucion)
     X, Y = np.meshgrid(x_rango, y_rango)
@@ -211,22 +238,37 @@ def calcular_mapa_error_z(df, z_fijo, A0_fijo, resolucion=60,
 
     for i in range(resolucion):
         for j in range(resolucion):
-            Z_err[i, j] = calcular_error_global(df, [X[i, j], Y[i, j], z_fijo, A0_fijo])
+            Z_err[i, j] = calcular_error_relativo_global(df, [X[i, j], Y[i, j], z_fijo, A0_fijo])
 
     return X, Y, Z_err
 
 
-def graficar_mapa_calor_z(df, z_fijo, A0_fijo, resolucion=60, save_path=None, show=True):
+def graficar_mapa_calor_z(
+    df, z_fijo, A0_fijo, resolucion=60, save_path=None, show=True,
+    contour_levels=None, log_vmin=None, log_vmax=None,
+):
     X, Y, Z_err = calcular_mapa_error_z(df, z_fijo, A0_fijo, resolucion)
 
+    Z_log = _to_log_visual(Z_err)
+    z_lo = log_vmin if log_vmin is not None else float(np.nanmin(Z_log))
+    z_hi = log_vmax if log_vmax is not None else float(np.nanmax(Z_log))
+    if contour_levels is None:
+        levels = _niveles_equiespaciados(z_lo, z_hi, NUM_CONTOUR_LEVELS)
+    else:
+        levels = _validar_niveles_contorno(contour_levels, z_lo, z_hi)
+
     fig, ax = plt.subplots(figsize=(9, 7))
-    cp = ax.contourf(X, Y, np.log10(Z_err + 1e-5), levels=40, cmap='viridis_r')
-    plt.colorbar(cp, ax=ax, label='Log10(Error Residual)')
+    cp = ax.contourf(
+        X, Y, Z_log, levels=levels, cmap='viridis_r',
+        vmin=levels[0], vmax=levels[-1], extend='both',
+    )
+    cbar = plt.colorbar(cp, ax=ax, ticks=levels)
+    cbar.set_label(f'log10(E_rr relativo + {LOG_ERR_EPS:g})')
     ax.scatter(df['X'], df['Y'], c='black', marker='^', s=100, label='Estaciones')
-    min_idx = np.unravel_index(np.argmin(Z_err), Z_err.shape)
+    mi, mj = _indice_minimo_grid(Z_err)
     ax.scatter(
-        X[min_idx], Y[min_idx], c='red', marker='X', s=150,
-        label=f'Mínimo (x={X[min_idx]:.1f}, y={Y[min_idx]:.1f})'
+        X[mi, mj], Y[mi, mj], c='red', marker='X', s=150,
+        label=f'Mínimo (x={X[mi, mj]:.1f}, y={Y[mi, mj]:.1f})'
     )
     ax.set_title(f'Mapa de Calor del Error en z = {z_fijo:.2f} m')
     ax.set_xlabel('Coordenada X (m)')
@@ -248,35 +290,43 @@ def graficar_mapa_calor_z(df, z_fijo, A0_fijo, resolucion=60, save_path=None, sh
 def generar_video_cortes_z(df, A0_fijo, z_min=1, z_max=200, num_cortes=100,
                            output_video='video_cortes_z.mp4', frames_dir='frames_z_cortes',
                            resolucion=40, fps=10, cleanup_frames=True):
-    import imageio.v2 as imageio
-
     os.makedirs(frames_dir, exist_ok=True)
     z_values = np.linspace(z_min, z_max, num_cortes)
     frame_paths = []
 
+    eng = SeismicEngine(stations=df[['X', 'Y', 'Z']].values)
+    obs = df['Amplitud_Azi'].values
+    z_lo, z_hi, levels = eng.precalcular_rango_log_global(
+        obs, A0_fijo, (z_min, z_max), num_cortes,
+        grid_size=resolucion, x_range=(-70, 70), y_range=(-70, 70),
+    )
+
     print(f"\nGenerando {num_cortes} cortes en z in [{z_min}, {z_max}]...")
-    for idx, z_fijo in enumerate(z_values):
-        frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
-        graficar_mapa_calor_z(
-            df, z_fijo, A0_fijo,
-            resolucion=resolucion,
-            save_path=frame_path,
-            show=False
-        )
-        frame_paths.append(frame_path)
-        if (idx + 1) % 10 == 0 or idx == num_cortes - 1:
-            print(f"  Progreso: {idx + 1}/{num_cortes} (z = {z_fijo:.2f} m)")
+    try:
+        for idx, z_fijo in enumerate(z_values):
+            frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
+            graficar_mapa_calor_z(
+                df, z_fijo, A0_fijo,
+                resolucion=resolucion,
+                save_path=frame_path,
+                show=False,
+                contour_levels=levels,
+                log_vmin=z_lo,
+                log_vmax=z_hi,
+            )
+            frame_paths.append(frame_path)
+            if (idx + 1) % 10 == 0 or idx == num_cortes - 1:
+                print(f"  Progreso: {idx + 1}/{num_cortes} (z = {z_fijo:.2f} m)")
 
-    print(f"Uniendo frames -> {output_video}")
-    with imageio.get_writer(output_video, fps=fps) as writer:
-        for frame_path in frame_paths:
-            writer.append_data(imageio.imread(frame_path))
-
-    if cleanup_frames:
-        for frame_path in frame_paths:
-            os.remove(frame_path)
-        if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
-            os.rmdir(frames_dir)
+        print(f"Uniendo frames -> {output_video}")
+        escribir_video_mp4(frame_paths, output_video, fps=fps)
+    finally:
+        if cleanup_frames:
+            for frame_path in frame_paths:
+                if os.path.isfile(frame_path):
+                    os.remove(frame_path)
+            if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
+                os.rmdir(frames_dir)
 
     print(f"Video generado: {output_video}")
     return output_video
