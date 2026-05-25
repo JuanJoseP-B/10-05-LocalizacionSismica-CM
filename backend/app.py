@@ -1,4 +1,7 @@
-from flask import Flask, jsonify, request
+import threading
+import uuid
+import os
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import numpy as np
 from .engine import SeismicEngine
@@ -6,76 +9,156 @@ from .engine import SeismicEngine
 app = Flask(__name__)
 CORS(app)
 
-# Global engine instance
 engine = SeismicEngine()
 
-# State storage for the current simulation
 current_simulation = {
     "stations": [],
     "observed": [],
     "real_source": [50, 50, 10],
-    "real_A0": 1000
+    "real_A0": 1000,
 }
+
+video_jobs = {}
+
+
+def _run_video_job(job_id, observed, A0, z_range, num_cuts, fps, grid_size):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output')
+    os.makedirs(output_dir, exist_ok=True)
+    video_path = os.path.join(output_dir, f'cortes_z_{job_id}.mp4')
+
+    video_jobs[job_id].update({'state': 'running', 'message': 'Generando frames...', 'progress': 0})
+
+    try:
+        z_values = np.linspace(z_range[0], z_range[1], num_cuts)
+        frames_dir = os.path.join(output_dir, f'frames_{job_id}')
+        os.makedirs(frames_dir, exist_ok=True)
+
+        import imageio.v2 as imageio
+
+        frame_paths = []
+        for idx, z_plane in enumerate(z_values):
+            frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
+            engine.save_heatmap_frame(
+                z_plane, observed, A0, frame_path,
+                grid_size=grid_size, x_range=(-100, 100), y_range=(-100, 100),
+            )
+            frame_paths.append(frame_path)
+            progress = int(((idx + 1) / num_cuts) * 90)
+            video_jobs[job_id].update({
+                'progress': progress,
+                'message': f'Frame {idx + 1}/{num_cuts} (z={z_plane:.1f}m)',
+            })
+
+        video_jobs[job_id].update({'progress': 92, 'message': 'Uniendo video MP4...'})
+        with imageio.get_writer(video_path, fps=fps) as writer:
+            for frame_path in frame_paths:
+                writer.append_data(imageio.imread(frame_path))
+
+        for frame_path in frame_paths:
+            os.remove(frame_path)
+        if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
+            os.rmdir(frames_dir)
+
+        video_jobs[job_id].update({
+            'state': 'done',
+            'progress': 100,
+            'message': 'Video listo',
+            'path': video_path,
+        })
+    except Exception as exc:
+        video_jobs[job_id].update({'state': 'error', 'message': str(exc), 'progress': 0})
+
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
     return jsonify({"status": "ready", "message": "Motor sísmico operativo"})
 
-@app.route('/api/setup', methods=['POST'])
-def setup_simulation():
-    data = request.json
-    x = float(data.get('x', 50))
-    y = float(data.get('y', 50))
-    z = float(data.get('z', 10))
-    a0 = float(data.get('a0', 1000))
-    n_stations = int(data.get('n_stations', 8))
-    
-    current_simulation["real_source"] = [x, y, z]
-    current_simulation["real_A0"] = a0
-    current_simulation["stations"] = engine.generate_stations(count=n_stations)
-    current_simulation["observed"] = engine.simulate_signal([x, y, z], a0)
-    
-    return jsonify({"status": "success", "stations_count": n_stations})
 
-@app.route('/api/stations', methods=['GET'])
-def get_stations():
-    return jsonify({
-        "stations": current_simulation["stations"].tolist(),
-        "real_source": current_simulation["real_source"],
-        "real_A0": current_simulation["real_A0"]
-    })
+@app.route('/api/simulate', methods=['POST'])
+def simulate_custom():
+    data = request.json or {}
+    stations = np.array(data.get('stations', []), dtype=float)
+    amplitudes = np.array(data.get('amplitudes', []), dtype=float)
+
+    if len(stations) == 0 or len(amplitudes) == 0:
+        return jsonify({"error": "Faltan estaciones o amplitudes"}), 400
+    if len(stations) != len(amplitudes):
+        return jsonify({"error": "Estaciones y amplitudes no coinciden"}), 400
+
+    engine.stations = stations
+    current_simulation["stations"] = stations
+    current_simulation["observed"] = amplitudes
+    current_simulation["real_source"] = [
+        float(data.get('x', 0)),
+        float(data.get('y', 0)),
+        float(data.get('z', 10)),
+    ]
+    current_simulation["real_A0"] = float(data.get('a0', 1000))
+    engine.alpha = float(data.get('alpha', 5)) / 100.0
+
+    return jsonify({"status": "success", "stations_count": len(stations)})
+
 
 @app.route('/api/solve', methods=['POST'])
 def solve_localization():
     if len(current_simulation["observed"]) == 0:
         return jsonify({"error": "No simulation data"}), 400
-        
+
     res = engine.solve(current_simulation["observed"])
     if res.success:
         return jsonify({
             "estimated_pos": res.x[:3].tolist(),
-            "estimated_A0": res.x[3],
-            "error": res.fun
+            "estimated_A0": float(res.x[3]),
+            "residual_error": float(res.fun),
+            "success": True,
         })
-    return jsonify({"error": "Optimization failed"}), 400
+    return jsonify({"error": "Optimization failed", "success": False}), 400
 
-@app.route('/api/heatmap', methods=['GET'])
-def get_heatmap():
-    z = float(request.args.get('z', current_simulation["real_source"][2]))
-    X, Y, Z = engine.get_heatmap_data(z, current_simulation["observed"], current_simulation["real_A0"], grid_size=30)
+
+@app.route('/api/heatmap-video/start', methods=['POST'])
+def start_heatmap_video():
+    if len(current_simulation["observed"]) == 0:
+        return jsonify({"error": "No simulation data"}), 400
+
+    data = request.json or {}
+    job_id = str(uuid.uuid4())[:8]
+    z_min = float(data.get('z_min', 1))
+    z_max = float(data.get('z_max', 200))
+    num_cuts = max(int(data.get('num_cuts', 100)), 100)
+    A0 = float(data.get('a0', current_simulation["real_A0"]))
+    fps = int(data.get('fps', 10))
+
+    video_jobs[job_id] = {'state': 'queued', 'progress': 0, 'message': 'En cola...', 'path': None}
+
+    thread = threading.Thread(
+        target=_run_video_job,
+        args=(job_id, current_simulation["observed"], A0, (z_min, z_max), num_cuts, fps, 40),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route('/api/heatmap-video/status/<job_id>', methods=['GET'])
+def video_status(job_id):
+    job = video_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Trabajo no encontrado"}), 404
     return jsonify({
-        "x": X[0, :].tolist(),
-        "y": Y[:, 0].tolist(),
-        "z_values": Z.tolist()
+        "state": job.get('state'),
+        "progress": job.get('progress', 0),
+        "message": job.get('message', ''),
     })
 
-@app.route('/api/error-curve', methods=['GET'])
-def get_error_curve():
-    z_vals, e_vals = engine.get_global_error_curve(current_simulation["observed"], current_simulation["real_A0"], z_range=(0, 50), steps=30)
-    return jsonify({
-        "z": z_vals.tolist(),
-        "error": e_vals.tolist()
-    })
+
+@app.route('/api/heatmap-video/download/<job_id>', methods=['GET'])
+def video_download(job_id):
+    job = video_jobs.get(job_id)
+    if not job or job.get('state') != 'done' or not job.get('path'):
+        return jsonify({"error": "Video no disponible"}), 404
+    return send_file(job['path'], mimetype='video/mp4', as_attachment=True, download_name='cortes_z.mp4')
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

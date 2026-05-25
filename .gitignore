@@ -5,3 +5,7 @@ venv/
 env/
 .vscode/
 .idea/
+backend/output/
+frames_z_cortes/
+video_cortes_z.mp4
+*.mp4
