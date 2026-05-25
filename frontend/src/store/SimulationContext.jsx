@@ -83,14 +83,13 @@ export function SimulationProvider({ children }) {
     window.setTimeout(() => {
       try {
         const observaciones = state.sensors.map((s) => s.lecturaAzi);
-        const m0 = [0, 0, 10, Math.max(state.params.A0 * 0.2, 100)];
-        const result = inversionGaussNewton(baseStations, observaciones, m0);
+        const result = inversionGaussNewton(baseStations, observaciones);
         dispatch({ type: 'INVERSION_DONE', inversion: result, history: result.history });
       } catch {
         dispatch({ type: 'INVERSION_FAIL' });
       }
     }, 0);
-  }, [state.sensors, state.params.A0]);
+  }, [state.sensors]);
 
   const downloadPdf = useCallback(() => {
     generatePdfReport({

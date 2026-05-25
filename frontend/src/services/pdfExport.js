@@ -5,11 +5,15 @@ import { formatNumber } from '../utils/format';
 export function generatePdfReport({ params, sensors, globalError, inversion }) {
   const doc = new jsPDF();
 
+  // Usar el E_rr de la inversión si existe, para que coincida con la tabla
+  const reportError = inversion ? inversion.residualError : globalError;
+
   doc.setFontSize(18);
   doc.text('Reporte de Localización Sísmica', 14, 22);
   doc.setFontSize(10);
   doc.text(`Fecha: ${new Date().toLocaleString()}`, 14, 30);
-  doc.text(`Error Residual Total (E_rr): ${formatNumber(globalError)}`, 14, 36);
+  doc.text(`Error Residual Total (E_rr): ${formatNumber(reportError)}`, 14, 36);
+
 
   doc.setFontSize(13);
   doc.text('Parámetros Fuente (Iniciales)', 14, 48);
