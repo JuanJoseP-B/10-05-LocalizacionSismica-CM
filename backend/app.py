@@ -4,7 +4,7 @@ import os
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import numpy as np
-from .engine import SeismicEngine
+from .engine import SeismicEngine, escribir_video_mp4
 
 app = Flask(__name__)
 CORS(app)
@@ -28,19 +28,28 @@ def _run_video_job(job_id, observed, A0, z_range, num_cuts, fps, grid_size):
 
     video_jobs[job_id].update({'state': 'running', 'message': 'Generando frames...', 'progress': 0})
 
+    frames_dir = os.path.join(output_dir, f'frames_{job_id}')
+    frame_paths = []
+
     try:
         z_values = np.linspace(z_range[0], z_range[1], num_cuts)
-        frames_dir = os.path.join(output_dir, f'frames_{job_id}')
         os.makedirs(frames_dir, exist_ok=True)
 
-        import imageio.v2 as imageio
+        video_jobs[job_id].update({
+            'progress': 2,
+            'message': 'Calculando rango global de color...',
+        })
+        z_lo, z_hi, levels = engine.precalcular_rango_log_global(
+            observed, A0, z_range, num_cuts,
+            grid_size=grid_size, x_range=(-70, 70), y_range=(-70, 70),
+        )
 
-        frame_paths = []
         for idx, z_plane in enumerate(z_values):
             frame_path = os.path.join(frames_dir, f'frame_{idx:04d}.png')
             engine.save_heatmap_frame(
                 z_plane, observed, A0, frame_path,
-                grid_size=grid_size, x_range=(-100, 100), y_range=(-100, 100),
+                grid_size=grid_size, x_range=(-70, 70), y_range=(-70, 70),
+                contour_levels=levels, log_vmin=z_lo, log_vmax=z_hi,
             )
             frame_paths.append(frame_path)
             progress = int(((idx + 1) / num_cuts) * 90)
@@ -50,14 +59,7 @@ def _run_video_job(job_id, observed, A0, z_range, num_cuts, fps, grid_size):
             })
 
         video_jobs[job_id].update({'progress': 92, 'message': 'Uniendo video MP4...'})
-        with imageio.get_writer(video_path, fps=fps) as writer:
-            for frame_path in frame_paths:
-                writer.append_data(imageio.imread(frame_path))
-
-        for frame_path in frame_paths:
-            os.remove(frame_path)
-        if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
-            os.rmdir(frames_dir)
+        escribir_video_mp4(frame_paths, video_path, fps=fps)
 
         video_jobs[job_id].update({
             'state': 'done',
@@ -67,6 +69,12 @@ def _run_video_job(job_id, observed, A0, z_range, num_cuts, fps, grid_size):
         })
     except Exception as exc:
         video_jobs[job_id].update({'state': 'error', 'message': str(exc), 'progress': 0})
+    finally:
+        for frame_path in frame_paths:
+            if os.path.isfile(frame_path):
+                os.remove(frame_path)
+        if os.path.isdir(frames_dir) and not os.listdir(frames_dir):
+            os.rmdir(frames_dir)
 
 
 @app.route('/api/status', methods=['GET'])
